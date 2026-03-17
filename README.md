@@ -138,3 +138,10 @@ Backend ini menyediakan endpoint untuk:
 - Education content dan payment methods
 - Partner application
 - Dashboard admin, komplain, verifikasi partner, dan daftar user
+
+## Dokumentasi Teknis
+
+Dokumentasi teknis backend tersedia di folder `docs`:
+
+- [Backend docs index](docs/README.md)
+- [Backend technical documentation](docs/technical-documentation.md)

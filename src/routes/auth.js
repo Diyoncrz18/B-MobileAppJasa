@@ -118,6 +118,122 @@ router.get('/me', verifyToken, async (req, res) => {
   }
 });
 
+// PATCH /api/auth/profile
+router.patch('/profile', verifyToken, async (req, res) => {
+  try {
+    const fullName = String(req.body?.fullName || '').trim();
+    const phone = String(req.body?.phone || '').trim();
+
+    if (!fullName) {
+      return res.status(400).json({ message: 'Nama lengkap wajib diisi' });
+    }
+
+    const { data: currentUser, error: currentUserError } = await supabaseAdmin
+      .from('users')
+      .select('id, email, role, status, created_at')
+      .eq('auth_uid', req.user.authUid)
+      .single();
+
+    if (currentUserError || !currentUser) {
+      return res.status(404).json({ message: 'User tidak ditemukan' });
+    }
+
+    const { data: updatedUser, error: updateError } = await supabaseAdmin
+      .from('users')
+      .update({
+        full_name: fullName,
+        phone: phone || null,
+      })
+      .eq('auth_uid', req.user.authUid)
+      .select('*')
+      .single();
+
+    if (updateError || !updatedUser) {
+      return res.status(400).json({ message: updateError?.message || 'Gagal memperbarui profil' });
+    }
+
+    const { error: metadataError } = await supabaseAdmin.auth.admin.updateUserById(
+      req.user.authUid,
+      {
+        user_metadata: {
+          full_name: fullName,
+          role: updatedUser.role,
+        },
+      }
+    );
+
+    if (metadataError) {
+      console.warn('Failed to sync auth metadata:', metadataError.message);
+    }
+
+    return res.json({
+      id: updatedUser.id,
+      email: updatedUser.email,
+      fullName: updatedUser.full_name,
+      phone: updatedUser.phone,
+      role: updatedUser.role,
+      status: updatedUser.status,
+      createdAt: updatedUser.created_at,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
+// POST /api/auth/change-password
+router.post('/change-password', verifyToken, async (req, res) => {
+  try {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: 'Password lama dan password baru wajib diisi' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: 'Password baru minimal 8 karakter' });
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ message: 'Password baru harus berbeda dari password lama' });
+    }
+
+    const { data: currentUser, error: currentUserError } = await supabaseAdmin
+      .from('users')
+      .select('email')
+      .eq('auth_uid', req.user.authUid)
+      .single();
+
+    if (currentUserError || !currentUser?.email) {
+      return res.status(404).json({ message: 'User tidak ditemukan' });
+    }
+
+    const { data: loginData, error: loginError } = await supabasePublic.auth.signInWithPassword({
+      email: currentUser.email,
+      password: currentPassword,
+    });
+
+    if (loginError || !loginData?.user || loginData.user.id !== req.user.authUid) {
+      return res.status(400).json({ message: 'Password lama tidak sesuai' });
+    }
+
+    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+      req.user.authUid,
+      {
+        password: newPassword,
+      }
+    );
+
+    if (updateError) {
+      return res.status(400).json({ message: updateError.message });
+    }
+
+    return res.json({ message: 'Password berhasil diperbarui' });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
 // POST /api/auth/logout
 router.post('/logout', verifyToken, async (req, res) => {
   // Supabase handles session on client side; backend can invalidate if needed

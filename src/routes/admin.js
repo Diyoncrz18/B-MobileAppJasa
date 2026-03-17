@@ -353,4 +353,157 @@ router.get('/users', async (_req, res) => {
   })));
 });
 
+// GET /api/admin/users/:id
+router.get('/users/:id', async (req, res) => {
+  const id = Number(req.params.id);
+
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ message: 'ID user tidak valid' });
+  }
+
+  const { data: user, error: userError } = await supabaseAdmin
+    .from('users')
+    .select('id, full_name, email, phone, role, status, created_at')
+    .eq('id', id)
+    .single();
+
+  if (userError) {
+    if (userError.code === 'PGRST116') {
+      return res.status(404).json({ message: 'User tidak ditemukan' });
+    }
+
+    return res.status(500).json({ message: userError.message });
+  }
+
+  const [
+    ordersResult,
+    addressesResult,
+    diagnosesResult,
+    reviewsResult,
+    notificationsResult,
+  ] = await Promise.all([
+    supabaseAdmin
+      .from('orders')
+      .select(
+        'id, code, status, scheduled_at, total_estimate, total_final, payment_method, created_at, services(title), providers(full_name)'
+      )
+      .eq('user_id', id)
+      .order('created_at', { ascending: false }),
+    supabaseAdmin
+      .from('addresses')
+      .select('id, label, address_line, city, province, postal_code, is_primary')
+      .eq('user_id', id)
+      .order('is_primary', { ascending: false }),
+    supabaseAdmin.from('diagnoses').select('id').eq('user_id', id),
+    supabaseAdmin.from('reviews').select('id, overall_rating').eq('user_id', id),
+    supabaseAdmin.from('notifications').select('id, is_read').eq('user_id', id),
+  ]);
+
+  const failedQuery = [
+    ordersResult,
+    addressesResult,
+    diagnosesResult,
+    reviewsResult,
+    notificationsResult,
+  ].find((result) => result.error);
+
+  if (failedQuery?.error) {
+    return res.status(500).json({ message: failedQuery.error.message });
+  }
+
+  const orders = ordersResult.data || [];
+  const addresses = addressesResult.data || [];
+  const diagnoses = diagnosesResult.data || [];
+  const reviews = reviewsResult.data || [];
+  const notifications = notificationsResult.data || [];
+
+  const orderIds = orders.map((order) => order.id);
+  let payments = [];
+
+  if (orderIds.length > 0) {
+    const { data: paymentsData, error: paymentsError } = await supabaseAdmin
+      .from('payments')
+      .select('id, order_id, amount, status, paid_at')
+      .in('order_id', orderIds);
+
+    if (paymentsError) {
+      return res.status(500).json({ message: paymentsError.message });
+    }
+
+    payments = paymentsData || [];
+  }
+
+  const paidPayments = payments.filter((payment) => payment.status === 'paid');
+  const averageRating =
+    reviews.length > 0
+      ? Number(
+          (
+            reviews.reduce(
+              (total, review) => total + Number(review.overall_rating || 0),
+              0
+            ) / reviews.length
+          ).toFixed(1)
+        )
+      : null;
+  const activeOrderCount = orders.filter((order) =>
+    ['submitted', 'accepted', 'traveling', 'arrived', 'in_progress', 'processing'].includes(
+      order.status
+    )
+  ).length;
+  const completedOrderCount = orders.filter(
+    (order) => order.status === 'completed'
+  ).length;
+  const unreadNotificationCount = notifications.filter(
+    (notification) => !notification.is_read
+  ).length;
+  const totalSpent = paidPayments.reduce(
+    (total, payment) => total + Number(payment.amount || 0),
+    0
+  );
+
+  res.json({
+    id: user.id,
+    fullName: user.full_name,
+    email: user.email,
+    phone: user.phone,
+    role: user.role,
+    status: user.status,
+    createdAt: user.created_at,
+    orderCount: orders.length,
+    completedOrderCount,
+    activeOrderCount,
+    addressCount: addresses.length,
+    totalSpent,
+    totalSpentLabel: formatCurrency(totalSpent),
+    averageRating,
+    activity: {
+      diagnosisCount: diagnoses.length,
+      reviewCount: reviews.length,
+      totalNotificationCount: notifications.length,
+      unreadNotificationCount,
+    },
+    addresses: addresses.map((address) => ({
+      id: address.id,
+      label: address.label,
+      addressLine: address.address_line,
+      city: address.city,
+      province: address.province,
+      postalCode: address.postal_code,
+      isPrimary: Boolean(address.is_primary),
+    })),
+    recentOrders: orders.slice(0, 5).map((order) => ({
+      id: order.id,
+      code: order.code,
+      status: order.status,
+      scheduledAt: order.scheduled_at,
+      createdAt: order.created_at,
+      paymentMethod: order.payment_method,
+      serviceTitle: order.services?.title || null,
+      providerName: order.providers?.full_name || null,
+      totalEstimateLabel: formatCurrency(order.total_estimate || 0),
+      totalFinalLabel: formatCurrency(order.total_final || 0),
+    })),
+  });
+});
+
 module.exports = router;
